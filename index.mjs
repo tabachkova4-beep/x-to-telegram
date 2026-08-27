@@ -36,44 +36,73 @@ await page.waitForTimeout(5000);
 
 console.log("URL:", page.url());
 
-const title = await page.title();
-console.log("Title:", title);
+const tweets = await page.locator("article").evaluateAll(articles => {
+  const result = [];
+  const seen = new Set();
 
-const articles = await page.locator("article").count();
+  for (const article of articles) {
+    const link = article.querySelector('a[href*="/status/"]');
 
-console.log("Найдено постов:", articles);
+    if (!link) continue;
 
-const tweets = await page.locator('article a[href*="/status/"]').evaluateAll(
-  links => {
-    const result = [];
-    const seen = new Set();
+    const match = link.href.match(/\/status\/(\d+)/);
 
-    for (const link of links) {
-      const href = link.href;
-      const match = href.match(/\/status\/(\d+)/);
+    if (!match) continue;
 
-      if (!match) continue;
+    const id = match[1];
 
-      const id = match[1];
+    if (seen.has(id)) continue;
 
-      if (seen.has(id)) continue;
+    seen.add(id);
 
-      seen.add(id);
+    const text = article.innerText.trim();
 
-      result.push({
-        id,
-        url: href
-      });
-    }
-
-    return result;
+    result.push({
+      id,
+      url: `https://x.com/i/status/${id}`,
+      text
+    });
   }
-);
 
-console.log("Найдено уникальных твитов:", tweets.length);
+  return result;
+});
 
-for (const tweet of tweets.slice(0, 10)) {
-  console.log(tweet.id, tweet.url);
+console.log("Найдено твитов:", tweets.length);
+
+if (tweets.length === 0) {
+  console.log("Твиты не найдены.");
+  await browser.close();
+  process.exit(0);
 }
+
+const tweet = tweets[0];
+
+console.log("Отправляем твит:", tweet.id);
+console.log("Ссылка:", tweet.url);
+
+const message =
+  `🐦 Новый твит\n\n` +
+  `${tweet.text}\n\n` +
+  `🔗 ${tweet.url}`;
+
+const telegramUrl =
+  `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+const response = await fetch(telegramUrl, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    chat_id: process.env.TELEGRAM_CHAT_ID,
+    text: message,
+    disable_web_page_preview: false
+  })
+});
+
+const result = await response.json();
+
+console.log("Telegram status:", response.status);
+console.log("Telegram result:", JSON.stringify(result, null, 2));
 
 await browser.close();
