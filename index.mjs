@@ -5,12 +5,18 @@ const x = new XClient({
   ct0: process.env.CT0
 });
 
-const { items } = await x.homeTimelinePage(20);
+try {
+  const result = await x.homeTimelinePage(20);
 
-console.log(`Получено твитов: ${items.length}`);
+  console.log("Тип результата:", typeof result);
+  console.log("Ключи результата:", Object.keys(result || {}));
+  console.log("Количество items:", result?.items?.length ?? "нет items");
+  console.log("Есть cursor:", !!result?.cursor);
 
-for (const tweet of items) {
-  console.log(
-    `@${tweet.author?.screen_name ?? tweet.author?.username ?? "unknown"}: ${tweet.text}`
-  );
+  if (result?.items?.length) {
+    console.log("Первый элемент — ключи:", Object.keys(result.items[0] || {}));
+  }
+} catch (error) {
+  console.error("ОШИБКА X:");
+  console.error(error?.message || error);
 }
