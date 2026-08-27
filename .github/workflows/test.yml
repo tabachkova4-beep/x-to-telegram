@@ -1,10 +1,13 @@
-name: Test X timeline
+name: X to Telegram
 
 on:
   workflow_dispatch:
 
+  schedule:
+    - cron: "*/5 * * * *"
+
 jobs:
-  test:
+  run:
     runs-on: ubuntu-latest
 
     steps:
@@ -22,10 +25,11 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
 
-      - name: Test X timeline
+      - name: Run bot
         env:
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
           CT0: ${{ secrets.CT0 }}
+          X_AUTHORIZATION: ${{ secrets.X_AUTHORIZATION }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node index.mjs
