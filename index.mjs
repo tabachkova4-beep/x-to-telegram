@@ -1,6 +1,15 @@
 import { chromium } from "playwright";
 import fs from "fs";
 
+// =====================================================
+// НАСТРОЙКИ
+// =====================================================
+
+const MAX_TWEETS_PER_RUN = 10;
+const SCROLL_COUNT = 6;
+const SCROLL_DISTANCE = 1800;
+const SCROLL_WAIT = 2500;
+
 const browser = await chromium.launch({
   headless: true
 });
@@ -37,16 +46,14 @@ await page.waitForTimeout(6000);
 
 console.log("URL:", page.url());
 
-
 // =====================================================
-// ОБЩИЙ СПИСОК НАЙДЕННЫХ ТВИТОВ
+// ОБЩИЙ СПИСОК ТВИТОВ
 // =====================================================
 
 const allTweets = new Map();
 
-
 // =====================================================
-// ФУНКЦИЯ СБОРА ТВИТОВ ИЗ ТЕКУЩЕЙ ЧАСТИ DOM
+// СБОР ТВИТОВ
 // =====================================================
 
 async function collectTweets() {
@@ -61,10 +68,9 @@ async function collectTweets() {
 
       if (!text) continue;
 
-
-      // -------------------------------------------------
+      // =================================================
       // УБИРАЕМ РЕКЛАМУ
-      // -------------------------------------------------
+      // =================================================
 
       const lowerText = text.toLowerCase();
 
@@ -74,14 +80,11 @@ async function collectTweets() {
         lowerText.includes("advertisement") ||
         lowerText.includes("реклама");
 
-      if (isAd) {
-        continue;
-      }
+      if (isAd) continue;
 
-
-      // -------------------------------------------------
+      // =================================================
       // ID ТВИТА
-      // -------------------------------------------------
+      // =================================================
 
       const links = Array.from(
         article.querySelectorAll('a[href*="/status/"]')
@@ -101,10 +104,9 @@ async function collectTweets() {
 
       if (!tweetId) continue;
 
-
-      // -------------------------------------------------
+      // =================================================
       // КАРТИНКИ
-      // -------------------------------------------------
+      // =================================================
 
       const images = [];
 
@@ -128,16 +130,16 @@ async function collectTweets() {
           src.includes("pbs.twimg.com/media") ||
           src.includes("pbs.twimg.com/amplify_video_thumb")
         ) {
+
           if (!images.includes(src)) {
             images.push(src);
           }
         }
       }
 
-
-      // -------------------------------------------------
+      // =================================================
       // ВНЕШНИЕ ССЫЛКИ
-      // -------------------------------------------------
+      // =================================================
 
       const externalLinks = [];
 
@@ -167,15 +169,13 @@ async function collectTweets() {
         }
       }
 
-
-      // -------------------------------------------------
+      // =================================================
       // ВИДЕО
-      // -------------------------------------------------
+      // =================================================
 
       const hasVideo =
         article.querySelector("video") !== null ||
         article.querySelector('[data-testid="videoPlayer"]') !== null;
-
 
       result.push({
         id: tweetId,
@@ -190,10 +190,9 @@ async function collectTweets() {
     return result;
   });
 
-
-  // ---------------------------------------------------
+  // ===================================================
   // ДОБАВЛЯЕМ В ОБЩИЙ СПИСОК
-  // ---------------------------------------------------
+  // ===================================================
 
   for (const tweet of tweets) {
 
@@ -202,13 +201,11 @@ async function collectTweets() {
     }
   }
 
-
   console.log(
     "Всего уникальных твитов собрано:",
     allTweets.size
   );
 }
-
 
 // =====================================================
 // ПЕРВЫЙ СБОР
@@ -218,41 +215,45 @@ console.log("Собираем первую часть ленты...");
 
 await collectTweets();
 
-
 // =====================================================
-// ПРОКРУТКА + СБОР ПОСЛЕ КАЖДОЙ ПРОКРУТКИ
+// ПРОКРУТКА
 // =====================================================
 
 console.log("Прокручиваем ленту...");
 
-for (let i = 0; i < 12; i++) {
+for (let i = 0; i < SCROLL_COUNT; i++) {
 
-  await page.mouse.wheel(0, 1800);
+  await page.mouse.wheel(
+    0,
+    SCROLL_DISTANCE
+  );
 
-  // Даём X время подгрузить новые твиты
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(
+    SCROLL_WAIT
+  );
 
-  console.log(`Прокрутка ${i + 1}/12`);
+  console.log(
+    `Прокрутка ${i + 1}/${SCROLL_COUNT}`
+  );
 
-  // ВАЖНО: собираем ДО следующей прокрутки
   await collectTweets();
 }
-
 
 // =====================================================
 // ФИНАЛЬНЫЙ СПИСОК
 // =====================================================
 
-const tweets = Array.from(allTweets.values());
+const tweets = Array.from(
+  allTweets.values()
+);
 
 console.log(
   "Всего найдено уникальных твитов:",
   tweets.length
 );
 
-
 // =====================================================
-// ЗАГРУЖАЕМ SENT.JSON
+// SENT.JSON
 // =====================================================
 
 let sentTweets = [];
@@ -262,7 +263,10 @@ if (fs.existsSync("sent.json")) {
   try {
 
     sentTweets = JSON.parse(
-      fs.readFileSync("sent.json", "utf8")
+      fs.readFileSync(
+        "sent.json",
+        "utf8"
+      )
     );
 
   } catch {
@@ -273,9 +277,8 @@ if (fs.existsSync("sent.json")) {
 
 const sentSet = new Set(sentTweets);
 
-
 // =====================================================
-// ОСТАВЛЯЕМ ТОЛЬКО НОВЫЕ
+// НОВЫЕ ТВИТЫ
 // =====================================================
 
 const newTweets = tweets.filter(
@@ -287,6 +290,20 @@ console.log(
   newTweets.length
 );
 
+// =====================================================
+// ОГРАНИЧИВАЕМ КОЛИЧЕСТВО
+// =====================================================
+
+const tweetsToSend =
+  newTweets.slice(
+    0,
+    MAX_TWEETS_PER_RUN
+  );
+
+console.log(
+  "Будет отправлено:",
+  tweetsToSend.length
+);
 
 // =====================================================
 // TELEGRAM
@@ -295,44 +312,167 @@ console.log(
 const telegramUrl =
   `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
+// =====================================================
+// ПАУЗА
+// =====================================================
+
+async function sleep(ms) {
+
+  await new Promise(
+    resolve => setTimeout(resolve, ms)
+  );
+}
 
 // =====================================================
-// ОТПРАВКА
+// ОТПРАВКА ЗАПРОСА В TELEGRAM
+// С ОБРАБОТКОЙ 429
 // =====================================================
 
-for (const tweet of newTweets) {
+async function telegramRequest(
+  endpoint,
+  body
+) {
+
+  while (true) {
+
+    const response = await fetch(
+      `${telegramUrl}/${endpoint}`,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+
+        body: JSON.stringify(body)
+      }
+    );
+
+    const result =
+      await response.json();
+
+    console.log(
+      `Telegram ${endpoint}:`,
+      response.status
+    );
+
+    // ===============================================
+    // УСПЕШНО
+    // ===============================================
+
+    if (result.ok) {
+
+      return {
+        ok: true,
+        result
+      };
+    }
+
+    // ===============================================
+    // RATE LIMIT
+    // ===============================================
+
+    if (
+      response.status === 429 ||
+      result.error_code === 429
+    ) {
+
+      const retryAfter =
+        Number(
+          result.parameters?.retry_after
+        ) || 30;
+
+      console.log(
+        `Telegram ограничил частоту. Ждём ${retryAfter} секунд...`
+      );
+
+      await sleep(
+        (retryAfter + 1) * 1000
+      );
+
+      console.log(
+        "Повторяем отправку..."
+      );
+
+      continue;
+    }
+
+    // ===============================================
+    // ДРУГАЯ ОШИБКА
+    // ===============================================
+
+    console.log(
+      "Ошибка Telegram:",
+      JSON.stringify(result)
+    );
+
+    return {
+      ok: false,
+      result
+    };
+  }
+}
+
+// =====================================================
+// ОТПРАВКА ТВИТОВ
+// =====================================================
+
+for (const tweet of tweetsToSend) {
 
   console.log("");
-  console.log("Отправляем твит:", tweet.id);
-  console.log("Ссылка:", tweet.url);
+  console.log(
+    "Отправляем твит:",
+    tweet.id
+  );
 
+  console.log(
+    "Ссылка:",
+    tweet.url
+  );
 
-  // ---------------------------------------------------
-  // ТЕКСТ
-  // ---------------------------------------------------
+  // ===================================================
+  // ФОРМИРУЕМ ТЕКСТ
+  // ===================================================
 
   let message =
     `🐦 Новый твит\n\n` +
     `${tweet.text}\n\n`;
 
+  // ===================================================
+  // ВНЕШНИЕ ССЫЛКИ
+  // ===================================================
 
-  // Внешние ссылки
-  if (tweet.externalLinks.length > 0) {
+  if (
+    tweet.externalLinks.length > 0
+  ) {
 
-    message += "🔗 Ссылки:\n";
+    message +=
+      "🔗 Ссылки:\n";
 
-    for (const link of tweet.externalLinks.slice(0, 5)) {
-      message += `${link}\n`;
+    for (
+      const link of
+      tweet.externalLinks.slice(0, 5)
+    ) {
+
+      message +=
+        `${link}\n`;
     }
 
     message += "\n";
   }
 
+  // ===================================================
+  // ССЫЛКА НА ТВИТ
+  // ===================================================
 
-  message += `🔗 ${tweet.url}`;
+  message +=
+    `🔗 ${tweet.url}`;
 
+  // ===================================================
+  // ЛИМИТ TELEGRAM
+  // ===================================================
 
-  // Ограничение Telegram
   if (message.length > 4000) {
 
     message =
@@ -341,10 +481,11 @@ for (const tweet of newTweets) {
       `\n🔗 ${tweet.url}`;
   }
 
+  let tweetSentSuccessfully = true;
 
-  // ---------------------------------------------------
+  // ===================================================
   // КАРТИНКИ
-  // ---------------------------------------------------
+  // ===================================================
 
   if (tweet.images.length > 0) {
 
@@ -353,113 +494,102 @@ for (const tweet of newTweets) {
       tweet.images.length
     );
 
-    for (let i = 0; i < tweet.images.length; i++) {
+    for (
+      let i = 0;
+      i < tweet.images.length;
+      i++
+    ) {
 
-      const imageUrl = tweet.images[i];
+      const imageUrl =
+        tweet.images[i];
 
-      const photoResponse = await fetch(
-        `${telegramUrl}/sendPhoto`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json"
-          },
-
-          body: JSON.stringify({
-
+      const result =
+        await telegramRequest(
+          "sendPhoto",
+          {
             chat_id:
               process.env.TELEGRAM_CHAT_ID,
 
-            photo: imageUrl,
+            photo:
+              imageUrl,
 
             caption:
               i === 0
                 ? message.slice(0, 1024)
                 : undefined,
 
-            disable_notification: false
-          })
-        }
-      );
-
-      const photoResult =
-        await photoResponse.json();
-
-      console.log(
-        "Telegram sendPhoto:",
-        photoResponse.status
-      );
-
-      if (!photoResult.ok) {
-
-        console.log(
-          "Ошибка Telegram:",
-          JSON.stringify(photoResult)
+            disable_notification:
+              false
+          }
         );
+
+      if (!result.ok) {
+
+        tweetSentSuccessfully = false;
+
+        break;
       }
+
+      // Небольшая пауза между картинками
+      await sleep(700);
     }
 
   } else {
 
-    // -------------------------------------------------
+    // =================================================
     // ТЕКСТ / ВИДЕО / ССЫЛКА
-    // -------------------------------------------------
+    // =================================================
 
-    const response = await fetch(
-      `${telegramUrl}/sendMessage`,
-      {
-        method: "POST",
-
-        headers: {
-          "Content-Type": "application/json"
-        },
-
-        body: JSON.stringify({
-
+    const result =
+      await telegramRequest(
+        "sendMessage",
+        {
           chat_id:
             process.env.TELEGRAM_CHAT_ID,
 
-          text: message,
+          text:
+            message,
 
-          disable_web_page_preview: false
-        })
-      }
-    );
-
-    const result =
-      await response.json();
-
-    console.log(
-      "Telegram sendMessage:",
-      response.status
-    );
+          disable_web_page_preview:
+            false
+        }
+      );
 
     if (!result.ok) {
 
-      console.log(
-        "Ошибка Telegram:",
-        JSON.stringify(result)
-      );
+      tweetSentSuccessfully = false;
     }
   }
 
+  // ===================================================
+  // СОХРАНЯЕМ ID ТОЛЬКО ЕСЛИ УСПЕШНО ОТПРАВЛЕН
+  // ===================================================
 
-  // ---------------------------------------------------
-  // СОХРАНЯЕМ ID
-  // ---------------------------------------------------
+  if (tweetSentSuccessfully) {
 
-  sentSet.add(tweet.id);
+    sentSet.add(
+      tweet.id
+    );
 
-  sentTweets.push(tweet.id);
+    console.log(
+      "Твит успешно отправлен:",
+      tweet.id
+    );
 
+  } else {
 
-  // Небольшая пауза
-  await new Promise(
-    resolve => setTimeout(resolve, 500)
-  );
+    console.log(
+      "Твит НЕ был сохранён как отправленный:",
+      tweet.id
+    );
+  }
+
+  // ===================================================
+  // ПАУЗА МЕЖДУ ТВИТАМИ
+  // ===================================================
+
+  await sleep(1000);
 }
-
 
 // =====================================================
 // СОХРАНЯЕМ SENT.JSON
@@ -467,6 +597,7 @@ for (const tweet of newTweets) {
 
 fs.writeFileSync(
   "sent.json",
+
   JSON.stringify(
     Array.from(sentSet),
     null,
@@ -475,10 +606,14 @@ fs.writeFileSync(
 );
 
 console.log("");
+
 console.log(
   "Сохранено отправленных твитов:",
   sentSet.size
 );
 
+// =====================================================
+// ЗАКРЫВАЕМ БРАУЗЕР
+// =====================================================
 
 await browser.close();
