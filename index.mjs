@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import fs from "fs";
 
 const browser = await chromium.launch({
   headless: true
@@ -27,7 +28,6 @@ const page = await context.newPage();
 
 console.log("Открываем X...");
 
-// ЯВНО открываем Following
 await page.goto("https://x.com/home", {
   waitUntil: "domcontentloaded",
   timeout: 60000
@@ -35,26 +35,28 @@ await page.goto("https://x.com/home", {
 
 await page.waitForTimeout(5000);
 
-// Переходим именно в Following через вкладку
-const followingTab = page.getByText("Following", { exact: true }).first();
-
-if (await followingTab.count()) {
-  await followingTab.click();
-  await page.waitForTimeout(3000);
-}
-
 console.log("URL:", page.url());
 
 
-// Прокручиваем ленту несколько раз,
-// чтобы X загрузил больше твитов
-for (let i = 0; i < 6; i++) {
+// =====================================================
+// ПРОКРУЧИВАЕМ ЛЕНТ
+// =====================================================
+
+console.log("Прокручиваем ленту...");
+
+for (let i = 0; i < 8; i++) {
   await page.mouse.wheel(0, 2500);
   await page.waitForTimeout(1500);
+
+  console.log(`Прокрутка ${i + 1}/8`);
 }
 
-console.log("Собираем твиты...");
 
+// =====================================================
+// СОБИРАЕМ ТВИТЫ
+// =====================================================
+
+console.log("Собираем твиты...");
 
 const tweets = await page.locator("article").evaluateAll(articles => {
   const result = [];
@@ -62,62 +64,149 @@ const tweets = await page.locator("article").evaluateAll(articles => {
 
   for (const article of articles) {
 
-    const link = article.querySelector('a[href*="/status/"]');
-
-    if (!link) continue;
-
-    const match = link.href.match(/\/status\/(\d+)/);
-
-    if (!match) continue;
-
-    const id = match[1];
-
-    if (seen.has(id)) continue;
-
-    seen.add(id);
-
-
     const text = article.innerText.trim();
 
+    if (!text) continue;
 
-    // Убираем рекламные посты
-    const lower = text.toLowerCase();
 
-    if (
-      lower.includes("promoted") ||
-      lower.includes("promoted by") ||
-      lower.includes("реклама") ||
-      lower.includes("рекламируется")
-    ) {
+    // -------------------------------------------------
+    // УБИРАЕМ РЕКЛАМУ
+    // -------------------------------------------------
+
+    const lowerText = text.toLowerCase();
+
+    const isAd =
+      lowerText.includes("promoted") ||
+      lowerText.includes("реклама") ||
+      lowerText.includes("sponsored") ||
+      lowerText.includes("advertisement");
+
+    if (isAd) {
       continue;
     }
 
 
-    // Собираем изображения
-    const images = Array.from(
-      article.querySelectorAll('img[src*="pbs.twimg.com/media"]')
-    )
-      .map(img => img.src)
-      .filter(Boolean);
+    // -------------------------------------------------
+    // ID ТВИТА
+    // -------------------------------------------------
+
+    const links = Array.from(
+      article.querySelectorAll('a[href*="/status/"]')
+    );
+
+    let tweetId = null;
+
+    for (const link of links) {
+      const match = link.href.match(/\/status\/(\d+)/);
+
+      if (match) {
+        tweetId = match[1];
+        break;
+      }
+    }
+
+    if (!tweetId) continue;
+
+    if (seen.has(tweetId)) continue;
+
+    seen.add(tweetId);
 
 
-    // Собираем видео
-    const videos = Array.from(
-      article.querySelectorAll("video")
-    )
-      .map(video => {
-        const source = video.querySelector("source");
-        return source?.src || video.src || null;
-      })
-      .filter(Boolean);
+    // -------------------------------------------------
+    // КАРТИНКИ
+    // -------------------------------------------------
+
+    const images = [];
+
+    const imgElements = Array.from(
+      article.querySelectorAll("img")
+    );
+
+    for (const img of imgElements) {
+
+      const src =
+        img.src ||
+        img.getAttribute("src");
+
+      if (!src) continue;
+
+      if (
+        src.includes("profile_images") ||
+        src.includes("emoji") ||
+        src.includes("twimg.com/emoji")
+      ) {
+        continue;
+      }
+
+      if (
+        src.includes("pbs.twimg.com/media") ||
+        src.includes("pbs.twimg.com/amplify_video_thumb")
+      ) {
+        if (!images.includes(src)) {
+          images.push(src);
+        }
+      }
+    }
+
+
+    // -------------------------------------------------
+    // ВНЕШНИЕ ССЫЛКИ
+    // -------------------------------------------------
+
+    const externalLinks = [];
+
+    const allLinks = Array.from(
+      article.querySelectorAll("a[href]")
+    );
+
+    for (const link of allLinks) {
+
+      let href = link.href;
+
+      if (!href) continue;
+
+      if (
+        href.includes("x.com") ||
+        href.includes("twitter.com") ||
+        href.includes("t.co")
+      ) {
+        continue;
+      }
+
+      if (
+        href.startsWith("javascript:") ||
+        href.startsWith("#")
+      ) {
+        continue;
+      }
+
+      if (!externalLinks.includes(href)) {
+        externalLinks.push(href);
+      }
+    }
+
+
+    // -------------------------------------------------
+    // ВИДЕО
+    // -------------------------------------------------
+
+    const hasVideo =
+      article.querySelector("video") !== null ||
+      article.querySelector('[data-testid="videoPlayer"]') !== null;
 
 
     result.push({
-      id,
-      url: `https://x.com/i/status/${id}`,
+      id: tweetId,
+
+      url: `https://x.com/i/status/${tweetId}`,
+
       text,
+
       images,
-      videos
+
+      externalLinks,
+
+      hasVideo
     });
   }
 
@@ -128,38 +217,47 @@ const tweets = await page.locator("article").evaluateAll(articles => {
 console.log("Найдено твитов:", tweets.length);
 
 
-// Загружаем уже отправленные твиты
-let sent = [];
+// =====================================================
+// ЗАГРУЖАЕМ УЖЕ ОТПРАВЛЕННЫЕ
+// =====================================================
 
-try {
-  const fs = await import("fs");
+let sentTweets = [];
 
-  if (fs.existsSync("sent.json")) {
-    sent = JSON.parse(fs.readFileSync("sent.json", "utf8"));
+if (fs.existsSync("sent.json")) {
+  try {
+    sentTweets = JSON.parse(
+      fs.readFileSync("sent.json", "utf8")
+    );
+  } catch {
+    sentTweets = [];
   }
-} catch (error) {
-  console.log("Не удалось прочитать sent.json");
 }
 
+const sentSet = new Set(sentTweets);
 
-const sentSet = new Set(sent);
 
-const newTweets = tweets.filter(tweet => !sentSet.has(tweet.id));
+// =====================================================
+// ОСТАВЛЯЕМ ТОЛЬКО НОВЫЕ
+// =====================================================
+
+const newTweets = tweets.filter(
+  tweet => !sentSet.has(tweet.id)
+);
 
 console.log("Новых твитов:", newTweets.length);
 
 
-if (newTweets.length === 0) {
-  console.log("Новых твитов нет.");
-  await browser.close();
-  process.exit(0);
-}
+// =====================================================
+// TELEGRAM
+// =====================================================
 
-
-// Telegram
 const telegramUrl =
   `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
+
+// =====================================================
+// ОТПРАВКА
+// =====================================================
 
 for (const tweet of newTweets) {
 
@@ -167,93 +265,166 @@ for (const tweet of newTweets) {
   console.log("Ссылка:", tweet.url);
 
 
-  let caption =
+  // ---------------------------------------------------
+  // ТЕКСТ
+  // ---------------------------------------------------
+
+  let message =
     `🐦 Новый твит\n\n` +
-    `${tweet.text}\n\n` +
-    `🔗 ${tweet.url}`;
+    `${tweet.text}\n\n`;
 
 
-  // Telegram ограничивает подпись к фото 1024 символами
-  if (caption.length > 1024) {
-    caption = caption.substring(0, 1000) + "…";
+  // Добавляем внешние ссылки,
+  // если они не отображаются нормально в тексте
+
+  if (tweet.externalLinks.length > 0) {
+
+    message += "\n🔗 Ссылки:\n";
+
+    for (const link of tweet.externalLinks.slice(0, 5)) {
+      message += `${link}\n`;
+    }
   }
 
 
-  // Если есть изображения — отправляем их
+  message += `\n🔗 ${tweet.url}`;
+
+
+  // Telegram ограничивает сообщение 4096 символами
+  if (message.length > 4000) {
+    message = message.slice(0, 3950) + "\n\n…" + `\n🔗 ${tweet.url}`;
+  }
+
+
+  // ---------------------------------------------------
+  // КАРТИНКИ
+  // ---------------------------------------------------
+
   if (tweet.images.length > 0) {
 
-    console.log("Изображений:", tweet.images.length);
+    console.log(
+      "Изображений:",
+      tweet.images.length
+    );
 
     for (let i = 0; i < tweet.images.length; i++) {
 
-      const photoUrl = tweet.images[i];
+      const imageUrl = tweet.images[i];
 
-      const response = await fetch(
+      const photoResponse = await fetch(
         `${telegramUrl}/sendPhoto`,
         {
           method: "POST",
+
           headers: {
             "Content-Type": "application/json"
           },
+
           body: JSON.stringify({
             chat_id: process.env.TELEGRAM_CHAT_ID,
-            photo: photoUrl,
-            caption: i === 0 ? caption : undefined,
+
+            photo: imageUrl,
+
+            caption:
+              i === 0
+                ? message.slice(0, 1024)
+                : undefined,
+
             disable_notification: false
           })
         }
       );
 
+      const photoResult =
+        await photoResponse.json();
+
       console.log(
         "Telegram sendPhoto:",
-        response.status
+        photoResponse.status
       );
+
+      if (!photoResult.ok) {
+        console.log(
+          "Ошибка Telegram:",
+          JSON.stringify(photoResult)
+        );
+      }
     }
 
   } else {
 
-    // Обычный твит без изображения
+    // -------------------------------------------------
+    // ОБЫЧНЫЙ ТЕКСТ / ВИДЕО / ССЫЛКА
+    // -------------------------------------------------
+
     const response = await fetch(
       `${telegramUrl}/sendMessage`,
       {
         method: "POST",
+
         headers: {
           "Content-Type": "application/json"
         },
+
         body: JSON.stringify({
           chat_id: process.env.TELEGRAM_CHAT_ID,
-          text: caption,
+
+          text: message,
+
           disable_web_page_preview: false
         })
       }
     );
 
+    const result =
+      await response.json();
+
     console.log(
       "Telegram sendMessage:",
       response.status
     );
+
+    if (!result.ok) {
+      console.log(
+        "Ошибка Telegram:",
+        JSON.stringify(result)
+      );
+    }
   }
 
 
-  // Помечаем твит как отправленный
+  // ---------------------------------------------------
+  // ЗАПОМИНАЕМ ТВИТ
+  // ---------------------------------------------------
+
   sentSet.add(tweet.id);
+
+  sentTweets.push(tweet.id);
+
+
+  // Небольшая пауза между отправками
+  await new Promise(
+    resolve => setTimeout(resolve, 500)
+  );
 }
 
 
-// Сохраняем список отправленных
-sent = Array.from(sentSet);
-
-const fs = await import("fs");
+// =====================================================
+// СОХРАНЯЕМ SENT.JSON
+// =====================================================
 
 fs.writeFileSync(
   "sent.json",
-  JSON.stringify(sent, null, 2)
+  JSON.stringify(
+    Array.from(sentSet),
+    null,
+    2
+  )
 );
-
 
 console.log(
   "Сохранено отправленных твитов:",
-  sent.length
+  sentSet.size
 );
 
 
